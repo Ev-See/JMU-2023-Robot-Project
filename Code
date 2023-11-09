@@ -1,0 +1,596 @@
+
+
+//SOURCES:
+/*[1]JasonForsyth, (2020) ENGR112-2020 sketchbook [https://github.com/jforsyth/ENGR112-2020/tree/master/sketchbook]. 
+[2]SparkfunElectronics, (2020) SIK-Guide-Code [https://github.com/sparkfun/SIK-Guide-Code/blob/master/README.md].
+*/
+
+//Anything referencing an environmental sensor or accelerometer comes from [1]
+//The distance sensor, and motor controller code comes from [2]
+
+
+//the right motor will be controlled by the motor A pins on the motor driver
+const int AIN1 = 13;           //control pin 1 on the motor driver for the right motor
+const int AIN2 = 12;            //control pin 2 on the motor driver for the right motor
+const int PWMA = 11;            //speed control pin on the motor driver for the right motor
+
+//the left motor will be controlled by the motor B pins on the motor driver
+const int PWMB = 10;           //speed control pin on the motor driver for the left motor
+const int BIN2 = 9;           //control pin 2 on the motor driver for the left motor
+const int BIN1 = 8;           //control pin 1 on the motor driver for the left motor
+
+//distance variables
+const int trigPin = 6;
+const int echoPin = 5;
+
+//Sound and Lights
+int buzzerPin = 4;
+//pin 2 and 3 are LEDs
+
+
+int switchPin = 7;             //switch to turn the robot on and off
+
+float distance = 0;            //variable to store the distance measured by the distance sensor
+
+//robot behaviour variables
+int backupTime = 300;           //amount of time that the robot will back up when it senses an object
+int turnTime = 200;             //amount that the robot will turn once it has backed up
+
+int sensor_L, sensor_R; //optical sensors
+String tmp;
+int ADC_stabilize = 5;
+int LightLevel = 400;
+
+
+// Added Code for the Environmental Sensor
+//include the Wire library to access the i2c interface
+#include <Wire.h>
+
+//include the libraries for the BME (humdity, pressure, altitude, and temperature)
+//and the CCS (CO2 and TVOC) sensors
+#include "SparkFunCCS811.h"
+#include "SparkFunBME280.h"
+
+//define the default I2C address of the CCS. Is not needed for BME
+//as is already in library
+#define CCS811_ADDR 0x5B //Default I2C Address
+
+//create handles to the two sensors
+BME280 bmeSensor;
+CCS811 ccsSensor(CCS811_ADDR);
+
+
+// Accelerometer 
+//include Wire Library to access i2c
+#include <Wire.h>
+
+//include the MMA8452 library
+#include <SparkFun_MMA8452Q.h>
+
+//create a handle to the accelerometer
+MMA8452Q accel;
+
+
+//Radio Piece
+// We'll use SoftwareSerial to communicate with the XBee:
+#include <SoftwareSerial.h>
+
+//For Atmega328P's
+// XBee's DOUT (TX) is connected to pin 2 (Arduino's Software RX)
+// XBee's DIN (RX) is connected to pin 3 (Arduino's Software TX)
+SoftwareSerial XBee(2, 3); // RX, TX
+
+
+
+String AccelPrint;
+String eVi;
+
+
+/********************************************************************************/
+void setup()
+{
+  pinMode(trigPin, OUTPUT);       //this pin will send ultrasonic pulses out from the distance sensor
+  pinMode(echoPin, INPUT);        //this pin will sense when the pulses reflect back to the distance sensor
+
+  pinMode(switchPin, INPUT_PULLUP);   //set this as a pullup to sense whether the switch is flipped
+
+  //set the motor control pins as outputs
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMA, OUTPUT);
+
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+
+  //LEDs 
+  pinMode(3, OUTPUT);
+  pinMode(2, OUTPUT);
+  // 2 & 3 are LEDs
+
+  //Radio ------
+  // Set up both ports at 9600 baud. This value is most important
+  // for the XBee. Make sure the baud rate matches the config
+  // setting of your XBee.
+ // XBee.begin(9600);
+ // Serial.println("\n***Begin Xbee Echo Program***");
+
+
+  Serial.begin(9600);                       //begin serial communication with the computer
+  Serial.print("Don't Crash");  //test the serial connection 
+
+
+// Environmental Sensor   [1]
+  Wire.begin();
+
+  if (bmeSensor.beginI2C() == false) //Begin communication over I2C
+  {
+    Serial.println("Could not access the BME sensor. Please check wiring.");
+    while (1); //Freeze
+  }
+
+
+  CCS811Core::status returnCode = ccsSensor.begin();
+  if (returnCode != CCS811Core::SENSOR_SUCCESS)
+  {
+    Serial.println("Could not access the CCS sensor. Please check wiring.");
+    while (1); //Hang if there was a problem.
+  }
+
+  //delay 1s so the boards can "warm-up"
+  delay(1000);
+
+  //print out "header" for data going out
+  Serial.println("humidity,pressure,altitude,temp,CO2,TVOC,time");
+
+
+
+  // Accelerometer   [1]
+   //Initialize the accelerometer to +/- 2g and 800 Hz output Parameters can be changed via library
+  accel.init();
+
+  //give the terminal time to catch up
+  delay(1000);
+
+  //print out the header for the file
+  Serial.println("X,Y,Z");
+
+}
+
+
+/********************************************************************************/
+void rightMotor(int motorSpeed)                       //function for driving the right motor
+{
+  if (motorSpeed > 0)                                 //if the motor should drive forward (positive speed)
+  {
+    digitalWrite(AIN1, HIGH);                         //set pin 1 to high
+    digitalWrite(AIN2, LOW);                          //set pin 2 to low
+  }
+  else if (motorSpeed < 0)                            //if the motor should drive backward (negative speed)
+  {
+    digitalWrite(AIN1, LOW);                          //set pin 1 to low
+    digitalWrite(AIN2, HIGH);                         //set pin 2 to high
+  }
+  else                                                //if the motor should stop
+  {
+    digitalWrite(AIN1, LOW);                          //set pin 1 to low
+    digitalWrite(AIN2, LOW);                          //set pin 2 to low
+  }
+  analogWrite(PWMA, abs(motorSpeed));                 //now that the motor direction is set, drive it at the entered speed
+}
+
+//[2]
+
+/********************************************************************************/
+void leftMotor(int motorSpeed)                        //function for driving the left motor
+{
+  if (motorSpeed > 0)                                 //if the motor should drive forward (positive speed)
+  {
+    digitalWrite(BIN1, HIGH);                         //set pin 1 to high
+    digitalWrite(BIN2, LOW);                          //set pin 2 to low
+  }
+  else if (motorSpeed < 0)                            //if the motor should drive backward (negative speed)
+  {
+    digitalWrite(BIN1, LOW);                          //set pin 1 to low
+    digitalWrite(BIN2, HIGH);                         //set pin 2 to high
+  }
+  else                                                //if the motor should stop
+  {
+    digitalWrite(BIN1, LOW);                          //set pin 1 to low
+    digitalWrite(BIN2, LOW);                          //set pin 2 to low
+  }
+  analogWrite(PWMB, abs(motorSpeed));                 //now that the motor direction is set, drive it at the entered speed
+}
+
+//[2]
+
+/**********************************************************************************/
+
+ //RETURNS THE DISTANCE MEASURED BY THE HC-SR04 DISTANCE SENSOR
+float getDistance()
+{
+  float echoTime;                   //variable to store the time it takes for a ping to bounce off an object
+  float calculatedDistance;         //variable to store the distance calculated from the echo time
+
+  //send out an ultrasonic pulse that's 10ms long
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  echoTime = pulseIn(echoPin, HIGH);      //use the pulsein command to see how long it takes for the
+                                          //pulse to bounce back to the sensor
+
+  calculatedDistance = echoTime / 148.0;  //calculate the distance of the object that reflected the pulse (half the bounce time multiplied by the speed of sound)
+
+  return calculatedDistance;              //send back the distance that was calculated
+
+  
+  // [2]
+
+
+} 
+
+
+
+/********************************************************************************/
+void loop()
+{
+
+  
+
+  sensor_L = analogRead(A0);
+  delay(ADC_stabilize);
+ 
+  sensor_R = analogRead(A2);
+  delay(ADC_stabilize);
+
+  tmp = "L=" + String(sensor_L) + " R=" + String(sensor_R); 
+
+  // send the value of analog inputs:
+  Serial.println(tmp);
+
+  // wait a bit for next reading
+  // delay(400); //1000=1 sec
+ 
+  digitalWrite(3, LOW);
+  digitalWrite(2, LOW);
+  
+  sensor_L = analogRead(A0);
+  sensor_R = analogRead(A2);
+
+ 
+
+
+
+  //ACCELEROMETER Start   [1]
+  //Request the x-acceleration. Note: this calls the read() function implicitly
+  //instead of explicitly like the SparkFun example. All accelerations are in g's.
+  float xAccel = accel.getXAcceleration();
+  float yAccel = accel.getYAcceleration();
+  float zAccel = accel.getZAcceleration();
+
+  
+  //ENVIRONMENTAL Start   [1]
+  // Get Data from the BME Board
+  float humidity = bmeSensor.readFloatHumidity();
+  float pressure = bmeSensor.readFloatPressure();
+  float altitude = bmeSensor.readFloatAltitudeFeet();
+  float temp = bmeSensor.readTempF();
+
+  //Get Data from the CCS Board  [1]
+  //create init variables for CO2 and TVOC. Give them some initial value
+  //so we can know if they are not "fresh" data from the sensor.
+  int CO2 = -1;
+  int TVOC = -1;
+
+  //check to see if CCS sensor is ready
+  if (ccsSensor.dataAvailable())
+  {
+    //If so, have the sensor read and calculate the results.
+    ccsSensor.readAlgorithmResults();
+
+    //request data from the sensor
+    CO2 = ccsSensor.getCO2();
+    TVOC = ccsSensor.getTVOC();
+  }
+
+ if(distance < 2.8)
+  {
+     Serial.print(" ");
+     Serial.print("BEEP!");
+     rightMotor(0);
+     leftMotor(0);
+     delay(200); 
+     tone(buzzerPin, 50);
+     delay(40);
+     tone(buzzerPin, 100);
+     delay(30);
+     tone(buzzerPin, 264);
+     delay(40);
+     tone(buzzerPin, 134);
+     delay(60);
+     tone(buzzerPin, 65);
+     delay(10);
+     tone(buzzerPin, 645);
+     delay(30);
+     noTone(buzzerPin); 
+     getDistance();   
+     delay(20);
+  } 
+ // No black line found
+ if(sensor_L < LightLevel && sensor_R < LightLevel){
+  rightMotor(90);
+  leftMotor(90);
+
+
+String AccelPrint;
+String eVi;
+  sensor_L = analogRead(A0);
+  delay(ADC_stabilize);
+  sensor_R = analogRead(A2);
+  delay(ADC_stabilize);
+  tmp = "L=" + String(sensor_L) + " R=" + String(sensor_R); 
+  // send the value of analog inputs:
+//  Serial.println(tmp);
+  // wait a bit for next reading
+  delay(40); //1000=1 sec
+  sensor_L = analogRead(A0);
+  sensor_R = analogRead(A2);
+  
+  
+
+   // AccelPrint = "X=" + String(xAccel,3) + "," + "Y=" + String(yAccel,3) + "," + "Z=" + String(zAccel,3);
+ // Serial.print(xAccel,3); //print to three decimal places
+ // Serial.print(",");
+ // Serial.print(yAccel,3); //print to three decimal places
+ // Serial.print(",");
+ // Serial.println(zAccel,3); //print to three decimal places
+      //Serial.println(AccelPrint);
+
+      // This just prints out all the values in one line so I know what is what
+  eVi = String(tmp) + "X=" + String(xAccel,3) + "," + "Y=" + String(yAccel,3) + "," + "Z=" + String(zAccel,3) + "," + "  Hmdty=" + String(humidity, 0) + "," + "PSI=" + String(pressure, 0) + "," + "Alt=" + String(altitude, 1) + "," + "Temp=" + String(temp, 2) + "," + "CO2=" + String(CO2) + "," + "TVOC=" + String(TVOC);
+ // Serial.print(humidity, 0); //print with no decimal places
+ // Serial.print(",");
+ // Serial.print(pressure, 0); //print with no decimal places
+ // Serial.print(",");
+ // Serial.print(altitude, 1); //print with one decimal place
+ // Serial.print(",");
+ // Serial.print(temp, 2); // print with two decimal places
+ // Serial.print(",");
+
+
+ // Serial.print(CO2);  //don't have to deal with decimals are result is integer
+ // Serial.print(",");
+ // Serial.print(TVOC); //don't have to deal with decimals are result is integer
+ // Serial.print(",");
+  Serial.println(eVi);
+  
+  distance = getDistance();
+
+ }
+
+// turn right
+ if(sensor_L < LightLevel && sensor_R > LightLevel){
+  rightMotor(-100);
+  leftMotor(100);
+
+
+String AccelPrint;
+String eVi;
+  sensor_L = analogRead(A0);
+  delay(ADC_stabilize);
+  sensor_R = analogRead(A2);
+  delay(ADC_stabilize);
+  digitalWrite(2, HIGH);
+  // tone(buzzerPin, 56);
+  tmp = "L=" + String(sensor_L) + " R=" + String(sensor_R); 
+  // send the value of analog inputs:
+ // Serial.println(tmp);
+  // wait a bit for next reading
+  delay(100); //1000=1 sec
+  sensor_L = analogRead(A0);
+  sensor_R = analogRead(A2);
+
+
+
+      // This just prints out all the values in one line so I know what is what
+      
+  eVi = String(tmp) + "X=" + String(xAccel,3) + "," + "Y=" + String(yAccel,3) + "," + "Z=" + String(zAccel,3) + "  Hmdty=" + String(humidity, 0) + "," + "PSI=" + String(pressure, 0) + "," + "Alt=" + String(altitude, 1) + "," + "Temp=" + String(temp, 2) + "," + "CO2=" + String(CO2) + "," + "TVOC=" + String(TVOC);
+  Serial.println(eVi);
+  
+   //Distance
+   //DETECT THE DISTANCE READ BY THE DISTANCE SENSOR
+  distance = getDistance();
+
+  delay(70);
+  rightMotor(120);
+  leftMotor(120);
+  delay(30);
+
+
+ }
+
+//turn left
+   if(sensor_L > LightLevel && sensor_R < LightLevel){
+  rightMotor(100);
+  leftMotor(-100);
+
+
+String AccelPrint;
+String eVi;
+  sensor_L = analogRead(A0);
+  delay(ADC_stabilize);
+  sensor_R = analogRead(A2);
+  delay(ADC_stabilize);
+  digitalWrite(3, HIGH);
+ //  tone(buzzerPin, 157);
+  tmp = "L=" + String(sensor_L) + " R=" + String(sensor_R); 
+  // send the value of analog inputs:
+  //  Serial.println(tmp);
+  // wait a bit for next reading
+  delay(100); //1000=1 sec
+  sensor_L = analogRead(A0);
+  sensor_R = analogRead(A2);
+
+
+  // AccelPrint = "X=" + String(xAccel,3) + "," + "Y=" + String(yAccel,3) + "," + "Z=" + String(zAccel,3);
+ // Serial.print(xAccel,3); //print to three decimal places
+ // Serial.print(",");
+ // Serial.print(yAccel,3); //print to three decimal places
+ // Serial.print(",");
+ // Serial.println(zAccel,3); //print to three decimal places
+      //Serial.println(AccelPrint);
+
+      // This just prints out all the values in one line so I know what is what
+  eVi = String(tmp) + "X=" + String(xAccel,3) + "," + "Y=" + String(yAccel,3) + "," + "Z=" + String(zAccel,3) + "  Hmdty=" + String(humidity, 0) + "," + "PSI=" + String(pressure, 0) + "," + "Alt=" + String(altitude, 1) + "," + "Temp=" + String(temp, 2) + "," + "CO2=" + String(CO2) + "," + "TVOC=" + String(TVOC);
+ // Serial.print(humidity, 0); //print with no decimal places
+ // Serial.print(",");
+ // Serial.print(pressure, 0); //print with no decimal places
+ // Serial.print(",");
+ // Serial.print(altitude, 1); //print with one decimal place
+ // Serial.print(",");
+ // Serial.print(temp, 2); // print with two decimal places
+ // Serial.print(",");
+
+
+ // Serial.print(CO2);  //don't have to deal with decimals are result is integer
+ // Serial.print(",");
+ // Serial.print(TVOC); //don't have to deal with decimals are result is integer
+ // Serial.print(",");
+  Serial.println(eVi);
+  
+   //Distance
+   //DETECT THE DISTANCE READ BY THE DISTANCE SENSOR
+  distance = getDistance();
+
+  delay(70);
+  rightMotor(120);
+  leftMotor(120);
+  delay(30);
+ 
+}     noTone(buzzerPin);
+
+/*
+//Detect Black
+   while(sensor_L > LightLevel && sensor_R > LightLevel){
+  rightMotor(100);
+  leftMotor(100);
+
+  sensor_L = analogRead(A0);
+  delay(ADC_stabilize);
+  sensor_R = analogRead(A2);
+  delay(ADC_stabilize);
+  tmp = "L=" + String(sensor_L) + " R=" + String(sensor_R); 
+  // send the value of analog inputs:
+  Serial.println(tmp);
+  // wait a bit for next reading
+  delay(40); //1000=1 sec
+  sensor_L = analogRead(A0);
+  sensor_R = analogRead(A2);
+   }
+*/
+ 
+ }
+
+
+
+
+ 
+/****************************************************************/
+
+//      Ignore all code below here
+
+/****************************************************/
+
+
+
+
+ /* distance = getDistance();
+
+    Serial.print("Distance: ");
+    Serial.print(distance);
+    Serial.println(" in");              // print the units
+
+  if (digitalRead(switchPin) == LOW) { //if the on switch is flipped
+
+    if (distance < 10) {              //if an object is detected
+      //back up and turn
+      Serial.print(" ");
+      Serial.print("BACK!");
+
+      //stop for a moment
+      rightMotor(0);
+      leftMotor(0);
+      delay(200);
+
+      //back up
+      digitalWrite(3, HIGH);
+      digitalWrite(2, HIGH);
+      rightMotor(-150);
+      leftMotor(-150);
+      delay(backupTime);
+
+      //turn away from obstacle
+      digitalWrite(3,HIGH);
+      rightMotor(150);
+      leftMotor(-150);
+      tone(buzzerPin, 82);
+      delay(turnTime);
+
+    }else {
+
+    //stop the motors
+   // rightMotor(0);
+   // leftMotor(0); 
+    } */
+
+
+
+
+   
+
+
+/*
+void rightMotor(int motorSpeed)                       //function for driving the right motor
+{
+  if (motorSpeed > 0)                                 //if the motor should drive forward (positive speed)
+  {
+    digitalWrite(AIN1, HIGH);                         //set pin 1 to high
+    digitalWrite(AIN2, LOW);                          //set pin 2 to low
+  }
+  else if (motorSpeed < 0)                            //if the motor should drive backward (negative speed)
+  {
+    digitalWrite(AIN1, LOW);                          //set pin 1 to low
+    digitalWrite(AIN2, HIGH);                         //set pin 2 to high
+  }
+  else                                                //if the motor should stop
+  {
+    digitalWrite(AIN1, LOW);                          //set pin 1 to low
+    digitalWrite(AIN2, LOW);                          //set pin 2 to low
+  }
+  analogWrite(PWMA, abs(motorSpeed));                 //now that the motor direction is set, drive it at the entered speed
+}
+
+
+
+void leftMotor(int motorSpeed)                        //function for driving the left motor
+{
+  if (motorSpeed > 0)                                 //if the motor should drive forward (positive speed)
+  {
+    digitalWrite(BIN1, HIGH);                         //set pin 1 to high
+    digitalWrite(BIN2, LOW);                          //set pin 2 to low
+  }
+  else if (motorSpeed < 0)                            //if the motor should drive backward (negative speed)
+  {
+    digitalWrite(BIN1, LOW);                          //set pin 1 to low
+    digitalWrite(BIN2, HIGH);                         //set pin 2 to high
+  }
+  else                                                //if the motor should stop
+  {
+    digitalWrite(BIN1, LOW);                          //set pin 1 to low
+    digitalWrite(BIN2, LOW);                          //set pin 2 to low
+  }
+  analogWrite(PWMB, abs(motorSpeed));                 //now that the motor direction is set, drive it at the entered speed
+}
+*/
+/********************************************************************************/
